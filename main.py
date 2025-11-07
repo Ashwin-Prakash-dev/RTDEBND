@@ -11,7 +11,8 @@ from typing import Optional, List
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-
+import time
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 app = FastAPI(title="Stock Analysis & Backtest API", version="1.0.0")
 
@@ -145,7 +146,7 @@ class StockScreenerParams(BaseModel):
     price_max: float = 1000.0
     sector: str = 'any'
 
-# Popular stock symbols (keeping your existing list)
+# Popular stock symbols 
 POPULAR_STOCKS = {
     'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corporation', 'GOOGL': 'Alphabet Inc. Class A',
     'GOOG': 'Alphabet Inc. Class C', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.',
@@ -223,8 +224,7 @@ POPULAR_STOCKS = {
 
 
 # ==================== STRATEGY CLASSES ====================
-# (Keep all your existing strategy classes: RSIStrategy, MACDStrategy, VolumeSpikeStrategy,
-#  PortfolioRSIStrategy, PortfolioMACDStrategy, PortfolioVolumeSpikeStrategy)
+# (RSIStrategy, MACDStrategy, VolumeSpikeStrategy,PortfolioRSIStrategy, PortfolioMACDStrategy, PortfolioVolumeSpikeStrategy)
 
 class RSIStrategy(bt.Strategy):
     params = (
@@ -483,7 +483,6 @@ class PortfolioVolumeSpikeStrategy(bt.Strategy):
 
 
 # ==================== HELPER FUNCTIONS ====================
-# (Keep all your existing helper functions)
 
 def calculate_rsi(prices, window=14):
     try:
@@ -816,6 +815,56 @@ def read_root():
 def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+@app.get("/test-yahoo-finance")
+def test_yahoo_finance():
+    """Test if Yahoo Finance is accessible from the server"""
+    try:
+        test_symbol = "AAPL"
+        ticker = yf.Ticker(test_symbol)
+        info = ticker.info
+        
+        return {
+            "status": "success",
+            "message": "Yahoo Finance is accessible",
+            "test_symbol": test_symbol,
+            "company_name": info.get('longName', 'Unknown'),
+            "has_data": len(info) > 0
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "Yahoo Finance is not accessible",
+            "error": str(e),
+            "suggestion": "The server might be blocked from accessing Yahoo Finance or rate-limited"
+        }
+
+# Add retry decorator for yfinance calls
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def download_with_retry(symbol, start, end):
+    """Download stock data with retry logic"""
+    try:
+        df = yf.download(symbol, start=start, end=end, progress=False)
+        if df.empty:
+            raise ValueError(f"No data returned for {symbol}")
+        return df
+    except Exception as e:
+        print(f"Download attempt failed for {symbol}: {e}")
+        raise
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_ticker_info_with_retry(symbol):
+    """Get ticker info with retry logic"""
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        if not info or len(info) == 0:
+            raise ValueError(f"No info returned for {symbol}")
+        return ticker, info
+    except Exception as e:
+        print(f"Ticker info attempt failed for {symbol}: {e}")
+        raise
+
+
 @app.get("/stock-suggestions", response_model=List[StockSuggestion])
 def get_stock_suggestions(q: str = Query(..., min_length=1)):
     try:
@@ -829,21 +878,53 @@ def get_stock_suggestions(q: str = Query(..., min_length=1)):
 def get_stock_info(symbol: str):
     try:
         symbol = symbol.upper().strip()
+        print(f"Fetching stock info for: {symbol}")
+        
         end_date = datetime.now()
         start_date = end_date - timedelta(days=90)
         
-        stock = yf.Ticker(symbol)
-        df = yf.download(symbol, start=start_date, end=end_date, progress=False)
+        # Try to get stock data with retries
+        try:
+            stock, info = get_ticker_info_with_retry(symbol)
+            df = download_with_retry(symbol, start=start_date, end=end_date)
+        except Exception as e:
+            print(f"Failed to fetch data for {symbol} after retries: {e}")
+            # Try alternative approach - check if symbol exists in our database
+            if symbol not in POPULAR_STOCKS:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Stock symbol '{symbol}' not found. This might be due to:\n"
+                           f"1. Invalid symbol\n"
+                           f"2. Yahoo Finance rate limiting\n"
+                           f"3. Network issues on the server\n"
+                           f"Please try again in a few seconds or try a different symbol."
+                )
+            raise HTTPException(
+                status_code=503,
+                detail=f"Unable to fetch data for {symbol}. The server might be rate-limited. Please try again in 30 seconds."
+            )
         
         if df.empty:
-            raise HTTPException(status_code=404, detail=f"Stock symbol '{symbol}' not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No historical data found for '{symbol}'. The symbol might be delisted or invalid."
+            )
         
+        # Process the data (rest of your existing code)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         
-        info = stock.info
-        current_price = df['Close'].iloc[-1]
-        previous_close = df['Close'].iloc[-2] if len(df) > 1 else current_price
+        # Validate we have the required data
+        required_columns = ['Close', 'High', 'Low', 'Volume']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Missing required data columns: {missing_columns}"
+            )
+        
+        current_price = float(df['Close'].iloc[-1])
+        previous_close = float(df['Close'].iloc[-2]) if len(df) > 1 else current_price
         change = current_price - previous_close
         change_percent = (change / previous_close) * 100
         
@@ -852,7 +933,7 @@ def get_stock_info(symbol: str):
         tech_indicators = calculate_technical_indicators(df)
         sentiment_data = generate_sentiment_data(symbol, current_price, change_percent)
         
-        # Calculate additional financial metrics
+        # Calculate additional financial metrics with validation
         roe = float(info.get('returnOnEquity', 0) * 100) if info.get('returnOnEquity') else 0.0
         debt_to_equity = float(info.get('debtToEquity', 0) / 100) if info.get('debtToEquity') else 0.0
         pb_ratio = float(info.get('priceToBook', 0)) if info.get('priceToBook') else 0.0
@@ -896,9 +977,12 @@ def get_stock_info(symbol: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error fetching stock info: {str(e)}")
+        print(f"Unexpected error fetching stock info: {str(e)}")
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Failed to fetch stock information: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to fetch stock information: {str(e)}"
+        )
 
 
 @app.post("/backtest-portfolio")
