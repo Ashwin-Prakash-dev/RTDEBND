@@ -11,8 +11,9 @@ from typing import Optional, List
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-import time
 from tenacity import retry, stop_after_attempt, wait_exponential
+import time
+
 
 app = FastAPI(title="Stock Analysis & Backtest API", version="1.0.0")
 
@@ -113,11 +114,9 @@ class StockInfo(BaseModel):
     analyst_hold: int
     analyst_sell: int
     target_price: float
-    # New fields for frontend compatibility
     roe: float = 0.0
     debt_to_equity: float = 0.0
     pb_ratio: float = 0.0
-    # Shareholding pattern fields
     promoter_holding: float = 0.0
     public_holding: float = 0.0
     institutional_holding: float = 0.0
@@ -146,7 +145,7 @@ class StockScreenerParams(BaseModel):
     price_max: float = 1000.0
     sector: str = 'any'
 
-# Popular stock symbols 
+# Popular stock symbols
 POPULAR_STOCKS = {
     'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corporation', 'GOOGL': 'Alphabet Inc. Class A',
     'GOOG': 'Alphabet Inc. Class C', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.',
@@ -223,8 +222,39 @@ POPULAR_STOCKS = {
 }
 
 
+# ==================== RETRY DECORATORS FOR YFINANCE ====================
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def download_with_retry(symbol, start, end):
+    """Download stock data with retry logic"""
+    try:
+        print(f"Attempting to download data for {symbol}...")
+        df = yf.download(symbol, start=start, end=end, progress=False)
+        if df.empty:
+            raise ValueError(f"No data returned for {symbol}")
+        print(f"Successfully downloaded data for {symbol}")
+        return df
+    except Exception as e:
+        print(f"Download attempt failed for {symbol}: {e}")
+        raise
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_ticker_info_with_retry(symbol):
+    """Get ticker info with retry logic"""
+    try:
+        print(f"Attempting to get ticker info for {symbol}...")
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        if not info or len(info) == 0:
+            raise ValueError(f"No info returned for {symbol}")
+        print(f"Successfully got ticker info for {symbol}")
+        return ticker, info
+    except Exception as e:
+        print(f"Ticker info attempt failed for {symbol}: {e}")
+        raise
+
+
 # ==================== STRATEGY CLASSES ====================
-# (RSIStrategy, MACDStrategy, VolumeSpikeStrategy,PortfolioRSIStrategy, PortfolioMACDStrategy, PortfolioVolumeSpikeStrategy)
 
 class RSIStrategy(bt.Strategy):
     params = (
@@ -819,6 +849,7 @@ def health_check():
 def test_yahoo_finance():
     """Test if Yahoo Finance is accessible from the server"""
     try:
+        print("Testing Yahoo Finance connectivity...")
         test_symbol = "AAPL"
         ticker = yf.Ticker(test_symbol)
         info = ticker.info
@@ -828,42 +859,18 @@ def test_yahoo_finance():
             "message": "Yahoo Finance is accessible",
             "test_symbol": test_symbol,
             "company_name": info.get('longName', 'Unknown'),
-            "has_data": len(info) > 0
+            "has_data": len(info) > 0,
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
+        print(f"Yahoo Finance test failed: {e}")
         return {
             "status": "error",
             "message": "Yahoo Finance is not accessible",
             "error": str(e),
-            "suggestion": "The server might be blocked from accessing Yahoo Finance or rate-limited"
+            "suggestion": "The server might be blocked from accessing Yahoo Finance or rate-limited",
+            "timestamp": datetime.now().isoformat()
         }
-
-# Add retry decorator for yfinance calls
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def download_with_retry(symbol, start, end):
-    """Download stock data with retry logic"""
-    try:
-        df = yf.download(symbol, start=start, end=end, progress=False)
-        if df.empty:
-            raise ValueError(f"No data returned for {symbol}")
-        return df
-    except Exception as e:
-        print(f"Download attempt failed for {symbol}: {e}")
-        raise
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def get_ticker_info_with_retry(symbol):
-    """Get ticker info with retry logic"""
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        if not info or len(info) == 0:
-            raise ValueError(f"No info returned for {symbol}")
-        return ticker, info
-    except Exception as e:
-        print(f"Ticker info attempt failed for {symbol}: {e}")
-        raise
-
 
 @app.get("/stock-suggestions", response_model=List[StockSuggestion])
 def get_stock_suggestions(q: str = Query(..., min_length=1)):
@@ -910,7 +917,7 @@ def get_stock_info(symbol: str):
                 detail=f"No historical data found for '{symbol}'. The symbol might be delisted or invalid."
             )
         
-        # Process the data (rest of your existing code)
+        # Process the data
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         
@@ -937,6 +944,8 @@ def get_stock_info(symbol: str):
         roe = float(info.get('returnOnEquity', 0) * 100) if info.get('returnOnEquity') else 0.0
         debt_to_equity = float(info.get('debtToEquity', 0) / 100) if info.get('debtToEquity') else 0.0
         pb_ratio = float(info.get('priceToBook', 0)) if info.get('priceToBook') else 0.0
+        
+        print(f"Successfully fetched stock info for {symbol}")
         
         return StockInfo(
             symbol=symbol,
