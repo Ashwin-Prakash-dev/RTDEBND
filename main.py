@@ -161,7 +161,7 @@ POPULAR_STOCKS = {
 
 # ==================== RATE LIMITED DOWNLOAD ====================
 
-def rate_limited_download(symbol: str, start_date, end_date, max_retries=3):
+def rate_limited_download(symbol: str, start, end, max_retries=3):
     """Download stock data with rate limiting and retry logic"""
     global LAST_REQUEST_TIME
     
@@ -185,8 +185,8 @@ def rate_limited_download(symbol: str, start_date, end_date, max_retries=3):
             # Use session for better connection handling
             df = yf.download(
                 symbol, 
-                start=start_date, 
-                end=end_date, 
+                start=start, 
+                end=end, 
                 progress=False,
                 timeout=10
             )
@@ -752,7 +752,7 @@ def get_stock_info(symbol: str):
         start_date = end_date - timedelta(days=90)
         
         print(f"Fetching stock info for: {symbol}")
-        df = rate_limited_download(symbol, start=start_date, end=end_date)
+        df = rate_limited_download(symbol, start_date, end_date)
         
         if df is None or df.empty:
             raise HTTPException(status_code=404, detail=f"Stock symbol '{symbol}' not found or no data available")
