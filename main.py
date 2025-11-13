@@ -1,3 +1,68 @@
+def rate_limited_download(symbol: str, start, end, max_retries=3):
+    """Download stock data with rate limiting and retry logic"""
+    global LAST_REQUEST_TIME
+    
+    # Rate limiting
+    current_time = time.time()
+    if symbol in LAST_REQUEST_TIME:
+        time_since_last = current_time - LAST_REQUEST_TIME[symbol]
+        if time_since_last < MIN_REQUEST_INTERVAL:
+            time.sleep(MIN_REQUEST_INTERVAL - time_since_last)
+    
+    for attempt in range(max_retries):
+        try:
+            # Add random delay to avoid burst requests
+            if attempt > 0:
+                delay = random.uniform(1, 3) * (attempt + 1)
+                print(f"Retry {attempt + 1} for {symbol} after {delay:.2f}s delay")
+                time.sleep(delay)
+            
+            LAST_REQUEST_TIME[symbol] = time.time()
+            
+            # Simple approach: just use period which works more reliably
+            print(f"Downloading {symbol} with period='3mo'")
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period="3mo")
+            
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+            
+            if df.empty:
+                print(f"No data returned for {symbol}")
+                return None
+            
+            # Ensure required columns exist
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                print(f"Missing columns for {symbol}: {missing_cols}")
+                return None
+            
+            print(f"Successfully downloaded {len(df)} rows for {symbol}")
+            return df
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            print(f"Error downloading {symbol} (attempt {attempt + 1}): {type(e).__name__}: {e}")
+            print(f"Full traceback: {traceback.format_exc()}")
+            
+            if '429' in error_msg or 'too many requests' in error_msg:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 5
+                    print(f"Rate limited on {symbol}, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"Max retries reached for {symbol} due to rate limiting")
+                    return None
+            else:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                return None
+    
+    return None
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
@@ -13,6 +78,12 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import time
 import random
+import os
+
+# CRITICAL: Set timezone environment variable BEFORE importing yfinance
+os.environ['TZ'] = 'America/New_York'
+if hasattr(time, 'tzset'):
+    time.tzset()
 
 app = FastAPI(title="Stock Analysis & Backtest API", version="1.0.0")
 
@@ -30,7 +101,7 @@ app.add_middleware(
 
 # Rate limiting globals
 LAST_REQUEST_TIME = {}
-MIN_REQUEST_INTERVAL = 1.5  # 500ms between requests per symbol
+MIN_REQUEST_INTERVAL = 0.5  # 500ms between requests per symbol
 
 # Pydantic models (keeping your existing models)
 class StockSuggestion(BaseModel):
@@ -145,7 +216,7 @@ class StockScreenerParams(BaseModel):
     price_max: float = 1000.0
     sector: str = 'any'
 
-# Popular stock symbols 
+# Popular stock symbols (keeping your existing list)
 POPULAR_STOCKS = {
     'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corporation', 'GOOGL': 'Alphabet Inc. Class A',
     'GOOG': 'Alphabet Inc. Class C', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.',
@@ -174,7 +245,7 @@ def rate_limited_download(symbol: str, start, end, max_retries=3):
     
     for attempt in range(max_retries):
         try:
-            
+            # Add random delay to avoid burst requests
             if attempt > 0:
                 delay = random.uniform(1, 3) * (attempt + 1)
                 print(f"Retry {attempt + 1} for {symbol} after {delay:.2f}s delay")
@@ -182,27 +253,21 @@ def rate_limited_download(symbol: str, start, end, max_retries=3):
             
             LAST_REQUEST_TIME[symbol] = time.time()
             
-            try: 
+            # Try Ticker.history() first as it's more reliable
+            print(f"Attempting to download {symbol} using Ticker.history()")
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(start=start, end=end)
+            
+            # If that fails or returns empty, try standard download
+            if df.empty:
+                print(f"Ticker.history() returned empty for {symbol}, trying yf.download()")
                 df = yf.download(
-                    symbol,
-                    start=start,
-                    end=end,
+                    symbol, 
+                    start=start, 
+                    end=end, 
                     progress=False,
-                    auto_adjust=True,  
-                    actions=False,     
-                    threads=False,      
-                    group_by='ticker',
-                    keepna=False
+                    timeout=10
                 )
-            except Exception as e:
-                error_msg = str(e).lower()
-                if 'timezone' in error_msg or 'delisted' in error_msg:
-                    # Method 2: Use Ticker object with history
-                    print(f"Trying alternative method for {symbol}")
-                    ticker = yf.Ticker(symbol)
-                    df = ticker.history(start=start, end=end)
-                else:
-                    raise
             
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
@@ -211,6 +276,14 @@ def rate_limited_download(symbol: str, start, end, max_retries=3):
                 print(f"No data returned for {symbol}")
                 return None
             
+            # Ensure required columns exist
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                print(f"Missing columns for {symbol}: {missing_cols}")
+                return None
+            
+            print(f"Successfully downloaded {len(df)} rows for {symbol}")
             return df
             
         except Exception as e:
@@ -226,9 +299,13 @@ def rate_limited_download(symbol: str, start, end, max_retries=3):
                 else:
                     print(f"Max retries reached for {symbol} due to rate limiting")
                     return None
-            elif 'delisted' in error_msg or 'timezone' in error_msg:
-                # This ticker has issues, skip it
-                print(f"Ticker {symbol} appears to have data issues, skipping")
+            elif 'delisted' in error_msg or 'timezone' in error_msg or 'yftz' in error_msg:
+                # These are known yfinance issues
+                print(f"Known yfinance issue for {symbol}: {error_msg}")
+                if attempt < max_retries - 1:
+                    # Try once more with increased delay
+                    time.sleep(2)
+                    continue
                 return None
             else:
                 if attempt < max_retries - 1:
@@ -812,6 +889,55 @@ def read_root():
 def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+@app.get("/debug/yfinance-test")
+def test_yfinance():
+    """Test endpoint to diagnose Yahoo Finance API issues"""
+    results = {
+        "timestamp": datetime.now().isoformat(),
+        "yfinance_version": yf.__version__,
+        "tests": []
+    }
+    
+    # Test a simple ticker
+    test_symbol = "AAPL"
+    try:
+        ticker = yf.Ticker(test_symbol)
+        df = ticker.history(period="5d")
+        
+        results["tests"].append({
+            "method": "Ticker.history()",
+            "symbol": test_symbol,
+            "status": "success" if not df.empty else "empty_data",
+            "rows": len(df),
+            "columns": list(df.columns) if not df.empty else []
+        })
+    except Exception as e:
+        results["tests"].append({
+            "method": "Ticker.history()",
+            "symbol": test_symbol,
+            "status": "error",
+            "error": str(e)
+        })
+    
+    try:
+        df = yf.download(test_symbol, period="5d", progress=False)
+        results["tests"].append({
+            "method": "yf.download()",
+            "symbol": test_symbol,
+            "status": "success" if not df.empty else "empty_data",
+            "rows": len(df),
+            "columns": list(df.columns) if not df.empty else []
+        })
+    except Exception as e:
+        results["tests"].append({
+            "method": "yf.download()",
+            "symbol": test_symbol,
+            "status": "error",
+            "error": str(e)
+        })
+    
+    return results
+
 @app.get("/stock-suggestions", response_model=List[StockSuggestion])
 def get_stock_suggestions(q: str = Query(..., min_length=1)):
     try:
@@ -832,10 +958,18 @@ def get_stock_info(symbol: str):
         df = rate_limited_download(symbol, start_date, end_date)
         
         if df is None or df.empty:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No data available for '{symbol}'. The ticker may be delisted, invalid, or have data issues with Yahoo Finance."
+            # Check if this might be a Yahoo Finance API issue
+            error_detail = (
+                f"Unable to fetch data for '{symbol}'. This could be due to:\n"
+                f"1. Invalid ticker symbol\n"
+                f"2. Yahoo Finance API issues (common with timezone errors)\n"
+                f"3. The stock may be delisted\n\n"
+                f"Try:\n"
+                f"- Using a different ticker symbol\n"
+                f"- Waiting a few minutes if Yahoo Finance is having issues\n"
+                f"- Checking if the symbol is correct (e.g., use 'AAPL' not 'APPLE')"
             )
+            raise HTTPException(status_code=404, detail=error_detail)
         
         info = rate_limited_ticker_info(symbol)
         current_price = df['Close'].iloc[-1]
@@ -892,8 +1026,8 @@ def get_stock_info(symbol: str):
             change=float(change),
             change_percent=float(change_percent),
             volume=int(df['Volume'].iloc[-1]),
-            market_cap=float(info.get('marketCap', 0)),
-            pe_ratio=float(info.get('trailingPE', 0)) if info.get('trailingPE') else 0.0,
+            market_cap=market_cap,
+            pe_ratio=pe_ratio,
             support_level=float(support),
             resistance_level=float(resistance),
             rsi=tech_indicators['rsi'],
