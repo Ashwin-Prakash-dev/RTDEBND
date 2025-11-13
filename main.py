@@ -30,7 +30,7 @@ app.add_middleware(
 
 # Rate limiting globals
 LAST_REQUEST_TIME = {}
-MIN_REQUEST_INTERVAL = 0.5  # 500ms between requests per symbol
+MIN_REQUEST_INTERVAL = 1.5  # 500ms between requests per symbol
 
 # Pydantic models (keeping your existing models)
 class StockSuggestion(BaseModel):
@@ -145,7 +145,7 @@ class StockScreenerParams(BaseModel):
     price_max: float = 1000.0
     sector: str = 'any'
 
-# Popular stock symbols (keeping your existing list)
+# Popular stock symbols 
 POPULAR_STOCKS = {
     'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corporation', 'GOOGL': 'Alphabet Inc. Class A',
     'GOOG': 'Alphabet Inc. Class C', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.',
@@ -174,7 +174,7 @@ def rate_limited_download(symbol: str, start, end, max_retries=3):
     
     for attempt in range(max_retries):
         try:
-            # Add random delay to avoid burst requests
+            
             if attempt > 0:
                 delay = random.uniform(1, 3) * (attempt + 1)
                 print(f"Retry {attempt + 1} for {symbol} after {delay:.2f}s delay")
@@ -182,15 +182,17 @@ def rate_limited_download(symbol: str, start, end, max_retries=3):
             
             LAST_REQUEST_TIME[symbol] = time.time()
             
-            # Try different methods to download data
-            try:
-                # Method 1: Standard download
+            try: 
                 df = yf.download(
-                    symbol, 
-                    start=start, 
-                    end=end, 
+                    symbol,
+                    start=start,
+                    end=end,
                     progress=False,
-                    timeout=10
+                    auto_adjust=True,  
+                    actions=False,     
+                    threads=False,      
+                    group_by='ticker',
+                    keepna=False
                 )
             except Exception as e:
                 error_msg = str(e).lower()
