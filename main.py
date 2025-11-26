@@ -1338,6 +1338,22 @@ async def screen_stocks(params: StockScreenerParams):
         raise HTTPException(status_code=500, detail=f"Stock screener failed: {str(e)}")
 
 
+def _get_time_ago(dt: datetime) -> str:
+    """Convert datetime to human-readable time ago format"""
+    now = datetime.now()
+    diff = now - dt
+    
+    hours = int(diff.total_seconds() / 3600)
+    minutes = int((diff.total_seconds() % 3600) / 60)
+    
+    if hours > 0:
+        return f"{hours} hour{'s' if hours > 1 else ''} ago"
+    elif minutes > 0:
+        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+    else:
+        return "Just now"
+
+
 @app.get("/market-overview")
 def get_market_overview():
     """Get market overview data including indices, commodities, and news"""
@@ -1399,9 +1415,7 @@ def get_market_overview():
                 print(f"Error fetching {info['name']}: {e}")
                 continue
         
-        # Generate sample news 
-        from datetime import datetime, timedelta
-        
+        # Placeholder
         news = [
             {
                 'title': 'Markets show mixed signals amid global economic data',
@@ -1429,22 +1443,8 @@ def get_market_overview():
         
     except Exception as e:
         print(f"Error in market overview: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to fetch market data: {str(e)}")
-
-def _get_time_ago(dt: datetime) -> str:
-    """Convert datetime to human-readable time ago format"""
-    now = datetime.now()
-    diff = now - dt
-    
-    hours = int(diff.total_seconds() / 3600)
-    minutes = int((diff.total_seconds() % 3600) / 60)
-    
-    if hours > 0:
-        return f"{hours} hour{'s' if hours > 1 else ''} ago"
-    elif minutes > 0:
-        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
-    else:
-        return "Just now"
 
 @app.post("/clear-cache")
 def clear_screening_cache():
