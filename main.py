@@ -1361,7 +1361,7 @@ def get_market_overview():
         indices_symbols = {
             '^NSEI': 'NIFTY 50',
             '^BSESN': 'SENSEX',
-            '^NSEBANK': 'NIFTY BANK',
+            '^STOXX50E': 'EURO STOXX 50',
             '^GSPC': 'S&P 500',
         }
         
