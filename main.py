@@ -1359,10 +1359,10 @@ def get_market_overview():
     try:
         # Major indices
         indices_symbols = {
-            '^NSEI': 'NIFTY 50',
-            '^BSESN': 'SENSEX',
-            '^STOXX50E': 'EURO STOXX 50',
             '^GSPC': 'S&P 500',
+            '^STOXX50E': 'EURO STOXX 50',
+            '^N225': 'NIKKEI 225',
+            '^EEM': 'MSCI Emerging Markets',
         }
         
         indices = []
